@@ -1,6 +1,6 @@
 # dotfiles
 
-Personal workflow and preference files for a new server/laptop: bash + zsh, Neovim, tmux, scripts, cron helpers, and a small Pi-only AI scaffold. Works on Linux (bash) and macOS (zsh); both shells share one aliases file.
+Personal workflow and preference files for a new server/laptop: bash + zsh, Neovim, tmux, scripts, cron helpers, global AI agent instructions, and a small Pi-only AI scaffold. Works on Linux (bash) and macOS (zsh); both shells share one aliases file.
 
 The core dotfiles are installed with GNU Stow. Scripts and AI files are kept in the repo but are not stowed into `$HOME` by default. Git config is intentionally **not** managed here — identity and auth (credential helpers, signing keys) vary per machine, so set those up per host.
 
@@ -27,6 +27,7 @@ git clone https://github.com/jishnujp/dotfiles.git ~/dotfiles && cd ~/dotfiles &
   - `shell` → `~/.shell_common.sh` (shared aliases/env sourced by bash **and** zsh)
   - `nvim` → `~/.config/nvim`
   - `tmux` → `~/.tmux.conf`
+  - `agents` → `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` (one shared file of global agent instructions)
 - Does **not** stow `scripts/`, `ai/`, `assets/`, or `docs/`.
 - Does **not** manage git config; set `~/.gitconfig` up per machine.
 - The managed `~/.bashrc` / `~/.zshrc` add `~/dotfiles/scripts/bin` to `PATH` and source `~/.bashrc.local` / `~/.zshrc.local` when present.
@@ -46,6 +47,9 @@ dotfiles/
 │   └── .config/nvim/          # Stow package for ~/.config/nvim
 ├── tmux/
 │   └── .tmux.conf             # Stow package for ~/.tmux.conf (per-OS clipboard)
+├── agents/
+│   ├── .codex/AGENTS.md       # global agent instructions, stowed to ~/.codex/AGENTS.md
+│   └── .claude/CLAUDE.md      # symlink to ../.codex/AGENTS.md, stowed to ~/.claude/CLAUDE.md
 ├── shell/
 │   └── .shell_common.sh       # shared aliases/env, sourced by bash and zsh
 ├── bash/
@@ -98,11 +102,16 @@ stow bash       # or: stow zsh   (macOS)
 stow shell
 stow nvim
 stow tmux
+stow agents
 stow -D nvim   # unstow
 stow -R nvim   # restow
 ```
 
 Do not run `stow */`; that would try to stow non-dotfile directories such as `scripts/`, `ai/`, `assets/`, and `docs/`.
+
+## Agent instructions
+
+`agents/.codex/AGENTS.md` holds the global instructions for AI coding agents: when Claude Code delegates to Codex, the handoff and report-back contracts, how to bound long-running commands, and how to write the final summary. It is one file linked into both `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md`, so edit it once and both tools pick it up. It is meant to be generic across personal and work repos; repo-specific rules go in that repo's own `AGENTS.md` or `CLAUDE.md`.
 
 ## Dependencies
 

@@ -15,6 +15,7 @@ settings.local.json
 *.tmp
 *.swp
 *~
+temp/
 
 # OS files
 .DS_Store

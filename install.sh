@@ -9,7 +9,7 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STOW_PACKAGES=(nvim tmux bash zsh shell)
+STOW_PACKAGES=(nvim tmux bash zsh shell agents)
 BACKUP_ROOT="$HOME/.dotfiles-backup"
 
 print_status() { echo -e "${GREEN}[✓]${NC} $1"; }
@@ -91,7 +91,7 @@ find_package_conflicts() {
                 printf '%s\t%s\n' "$source" "$target"
             fi
         fi
-    done < <(find "$REPO_DIR/$package" -type f -print0)
+    done < <(find "$REPO_DIR/$package" \( -type f -o -type l \) -print0)
 }
 
 resolve_package_conflicts() {
