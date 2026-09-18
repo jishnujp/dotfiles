@@ -178,8 +178,22 @@ blocks the `bwrap` binary that Codex bundles for its sandbox. Every command the
 delegate runs then fails with `bwrap: loopback: Failed RTM_NEWADDR: Operation not
 permitted`, in every sandbox mode except `danger-full-access`, while the job still
 exits 0. This affects bare `codex exec` equally. The fix is an AppArmor profile
-that grants `userns` to that binary; it is a host setting, not part of these
-dotfiles.
+that grants `userns` to that binary only. It is a host setting, not installed by
+these dotfiles; save this as `/etc/apparmor.d/codex-bwrap` (adjust the path if
+Codex is installed elsewhere) and load it with
+`sudo apparmor_parser -r /etc/apparmor.d/codex-bwrap`:
+
+```text
+abi <abi/5.0>,
+include <tunables/global>
+
+profile codex-bwrap /home/*/.local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-*/vendor/*/codex-resources/bwrap flags=(unconfined) {
+  userns,
+  @{exec_path} mr,
+
+  include if exists <local/codex-bwrap>
+}
+```
 
 Verify without API calls:
 
