@@ -117,7 +117,7 @@ class DelegateTests(unittest.TestCase):
         self.assertEqual(state["status"], "succeeded")
         self.assertEqual(state["label"], "fable_test")
         for key in ("created_at", "updated_at", "started_at", "finished_at",
-                    "worker_pid", "codex_pid", "process_group_id", "launcher_pid"):
+                    "worker_pid", "codex_pid"):
             self.assertIsNotNone(state[key])
         event = json.loads((self.root / job / "events.jsonl").read_text())
         argv = event["argv"]
@@ -235,7 +235,7 @@ class DelegateTests(unittest.TestCase):
             self.assertEqual(result.returncode, 125)
             self.assertEqual(result.stdout, "")
         result = self.run_cli("launch", "--codex", str(self.fake), prompt="x")
-        self.assertEqual(result.returncode, 125)  # No --cwd and no --resume.
+        self.assertEqual(result.returncode, 2)  # No --cwd and no --resume.
 
     def test_idle_timeout_stops_a_silent_run(self):
         job = self.launch("wait", "task", "--idle-timeout", "0.7")
@@ -257,7 +257,22 @@ class DelegateTests(unittest.TestCase):
                 break
         self.assertEqual(result.returncode, 125)
         self.assertEqual(json.loads(result.stdout)["status"], "lost")
-        os.killpg(state["process_group_id"], signal.SIGKILL)  # The wrapper cannot reap this.
+        os.killpg(state["codex_pid"], signal.SIGKILL)  # The wrapper cannot reap this.
+        # The thread id comes from the event log, so a lost job is still resumable.
+        (self.cwd / "mode").write_text("success")
+        result = self.run_cli("launch", "--resume", job, "--codex", str(self.fake),
+                              "--max-runtime", "8", prompt="carry on")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.jobs.append(result.stdout.strip())
+        self.assertEqual(self.run_cli("join", self.jobs[-1], "--timeout", "5").returncode, 0)
+
+    def test_list_skips_a_stateless_directory(self):
+        job = self.launch("success")
+        self.assertEqual(self.run_cli("join", job, "--timeout", "5").returncode, 0)
+        (self.root / "halfmade").mkdir()
+        listed = self.run_cli("list")
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertEqual([state["job_id"] for state in json.loads(listed.stdout)], [job])
 
     def test_inspect_reports_progress(self):
         job = self.launch("message")

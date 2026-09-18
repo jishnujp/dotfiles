@@ -129,7 +129,8 @@ The private `_worker` entry point is internal.
 
 `launch --resume JOB_ID` starts a new job that continues a finished job's Codex
 thread (`codex exec resume`), so a retry with feedback keeps the delegate's context.
-It inherits the earlier job's cwd, sandbox, and model unless they are given again,
+It inherits the earlier job's cwd, sandbox, model, and `--pass-env` names unless they
+are given again,
 and refuses live jobs and jobs launched with `--ephemeral`.
 
 Each job directory contains atomically replaced `state.json`, `events.jsonl`,
@@ -153,8 +154,8 @@ grace period; cleanup also covers children left behind when Codex exits.
 
 Prompts travel through anonymous pipes, never wrapper metadata, files, or command
 arguments. Workers and Codex receive only the account's HOME, the caller's PATH
-(so the delegate finds the same toolchain: node, uv, gh, and so on), LANG, and any
-variable named with a repeatable `--pass-env NAME`. Forwarded values live only in
+(so the delegate finds the same toolchain: node, uv, gh, and so on), the caller's
+LANG (`C.UTF-8` when unset), and any variable named with a repeatable `--pass-env NAME`. Forwarded values live only in
 the worker's process environment; `state.json` records the names, never the values.
 Authentication therefore uses the account's normal on-disk Codex login; caller API
 keys, custom CODEX_HOME, and proxies are not forwarded unless named. Codex keeps
@@ -166,7 +167,10 @@ completed job directories when no longer needed.
 
 If a worker is killed outright (SIGKILL) or the host reboots, the next `join`,
 `inspect`, `list`, or `cancel` notices the missing worker and marks the job `lost`
-(exit 125) instead of reporting it live forever. The wrapper does not kill the
+(exit 125) instead of reporting it live forever. Liveness is a file lock
+(`worker.lock`) that the worker holds for its whole life, so a reused process ID
+cannot make a dead job look alive. A lost job that got as far as starting its
+Codex thread can still be continued with `--resume`. The wrapper does not kill the
 Codex process such a worker leaves behind; check `codex_pid` from the job state.
 
 On Ubuntu 24.04 and later, AppArmor's restriction on unprivileged user namespaces

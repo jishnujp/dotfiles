@@ -3,6 +3,7 @@
 
 import argparse
 from datetime import datetime, timezone
+import fcntl
 import json
 import math
 import os
@@ -22,7 +23,6 @@ LIVE = {"queued", "running"}
 SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 GRACE = 2.0
 POLL = 0.2
-QUEUE_GRACE = 30.0
 SANDBOXES = ["read-only", "workspace-write", "danger-full-access"]
 
 
@@ -59,7 +59,8 @@ def clean_env(pass_env=()):
     # anything else must be named with --pass-env. Values live only in the
     # worker's process environment, never in state.json.
     env = {"HOME": pwd.getpwuid(os.getuid()).pw_dir,
-           "PATH": os.environ.get("PATH") or os.defpath, "LANG": "C.UTF-8"}
+           "PATH": os.environ.get("PATH") or os.defpath,
+           "LANG": os.environ.get("LANG") or "C.UTF-8"}
     env.update((name, os.environ[name]) for name in pass_env if name in os.environ)
     return env
 
@@ -95,31 +96,25 @@ def save_state(path, state, **changes):
         temp.unlink(missing_ok=True)
 
 
-def alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        pass
-    return True
-
-
 def current_state(path):
-    """Read state; a live job whose worker is gone (SIGKILL, reboot) becomes lost."""
+    """Read state; a live job whose worker is gone (SIGKILL, reboot) becomes lost.
+
+    The launcher takes an exclusive lock on worker.lock and hands the descriptor
+    to the worker, so the lock lasts exactly as long as the worker process does.
+    Unlike a PID check, this cannot be fooled by PID reuse.
+    """
     state = read_state(path)
     if state["status"] not in LIVE:
         return state
-    pid = state.get("worker_pid")
-    if pid is None:
-        age = (datetime.now(timezone.utc) - datetime.fromisoformat(state["created_at"])).total_seconds()
-        gone = age > QUEUE_GRACE
-    else:
-        gone = not alive(pid)
-    if gone:
+    with (path / "worker.lock").open("rb") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return state
         state = read_state(path)  # The worker may have finished between the two reads.
         if state["status"] in LIVE:
-            save_state(path, state, status="lost", exit_code=125, finished_at=now())
+            save_state(path, state, status="lost", exit_code=125, finished_at=now(),
+                       thread_id=thread_id(path))
     return state
 
 
@@ -141,10 +136,11 @@ def thread_id(path):
 def progress(path):
     """Cheap liveness view for long jobs: last event time and last agent message."""
     events = path / "events.jsonl"
-    info = {"last_event_at": datetime.fromtimestamp(events.stat().st_mtime, timezone.utc).isoformat(),
-            "last_message": None}
+    stat = events.stat()
+    info = {"last_event_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+            if stat.st_size else None, "last_message": None}
     with events.open("rb") as stream:
-        stream.seek(max(0, events.stat().st_size - 262144))
+        stream.seek(max(0, stat.st_size - 262144))
         for line in reversed(stream.read().splitlines()):
             try:
                 item = json.loads(line).get("item") or {}
@@ -196,6 +192,7 @@ def worker(path):
         signal.signal(sig, interrupt)
     deadline = time.monotonic() + state["max_runtime"]
     events_path = path / "events.jsonl"
+    seen_size, last_activity = 0, time.monotonic()
 
     def stopping():
         if interrupted or (path / "cancel.request").exists():
@@ -204,8 +201,12 @@ def worker(path):
             state["timeout_reason"] = "max_runtime"
             return "timed_out", 87
         # Codex emits an event per step; prolonged silence means a hung run.
-        if proc is not None and state["idle_timeout"] and \
-                time.time() - events_path.stat().st_mtime >= state["idle_timeout"]:
+        # Monotonic time, so a suspended laptop does not wake up "idle".
+        nonlocal seen_size, last_activity
+        size = events_path.stat().st_size
+        if size != seen_size:
+            seen_size, last_activity = size, time.monotonic()
+        if state["idle_timeout"] and time.monotonic() - last_activity >= state["idle_timeout"]:
             state["timeout_reason"] = "idle"
             return "timed_out", 87
         return None
@@ -213,18 +214,6 @@ def worker(path):
     status, code = "failed", 125
     try:
         save_state(path, state, worker_pid=os.getpid(), started_at=now())
-        # Read the anonymous pipe with a deadline, including incomplete launchers.
-        chunks = []
-        with selectors.DefaultSelector() as selector:
-            selector.register(sys.stdin.buffer, selectors.EVENT_READ)
-            while not stopping():
-                if selector.select(0.05):
-                    chunk = os.read(sys.stdin.fileno(), 65536)
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-        prompt = b"".join(chunks)
-        del chunks
         if stopping():
             status, code = stopping()
         else:
@@ -245,28 +234,26 @@ def worker(path):
                 command += ["--model", state["model"]]
             command.append("-")
             with (path / "events.jsonl").open("ab") as events, (path / "stderr.log").open("ab") as errors:
-                os.utime(events_path)  # The idle clock starts at spawn.
-                proc = subprocess.Popen(command, cwd=state["cwd"], env=dict(os.environ),
-                                        stdin=subprocess.PIPE, stdout=events,
-                                        stderr=errors, start_new_session=True)
-                save_state(path, state, status="running", codex_pid=proc.pid,
-                           process_group_id=proc.pid)
-                first = True
+                # Codex reads the prompt straight from the launcher's pipe (our stdin).
+                # It leads its own session, so codex_pid is also its process group.
+                proc = subprocess.Popen(command, cwd=state["cwd"], stdin=sys.stdin,
+                                        stdout=events, stderr=errors, start_new_session=True)
+                last_activity = time.monotonic()
+                save_state(path, state, status="running", codex_pid=proc.pid)
                 while True:
                     stop = stopping()
                     if stop:
                         status, code = stop
                         break
                     try:
-                        proc.communicate(input=prompt if first else None, timeout=POLL)
-                        code = proc.returncode
+                        code = proc.wait(timeout=POLL)
                         code = code if code >= 0 else 128 - code
                         status = "succeeded" if code == 0 else "failed"
                         if code == 0 and not (path / "result.md").is_file():
                             status, code = "failed", 125
                         break
                     except subprocess.TimeoutExpired:
-                        first = False
+                        pass
     except Exception as exc:
         # Exception messages can contain command/input details; persist only type.
         state["runner_error"] = type(exc).__name__
@@ -276,10 +263,8 @@ def worker(path):
             try:
                 stop_group(proc)
             except Exception as exc:
+                # Cleanup trouble is recorded but does not rewrite the outcome.
                 state["runner_error"] = type(exc).__name__
-                status, code = "failed", 125
-            if proc.stdin:
-                proc.stdin.close()
         save_state(path, state, status=status, exit_code=code, finished_at=now(),
                    thread_id=thread_id(path))
     return 0
@@ -292,14 +277,14 @@ def launch(args, root):
         parent = current_state(job_path(root, args.resume))
         if parent["status"] in LIVE:
             raise ValueError("cannot resume a live job: " + args.resume)
-        resume_thread = parent.get("thread_id")
+        # A lost worker never recorded its thread; the event log still has it.
+        resume_thread = parent.get("thread_id") or thread_id(job_path(root, args.resume))
         if not resume_thread or parent.get("ephemeral"):
             raise ValueError("job has no resumable Codex thread: " + args.resume)
         args.cwd = args.cwd or parent["cwd"]
         args.sandbox = args.sandbox or parent["sandbox"]
         args.model = args.model or parent["model"]
-    if not args.cwd:
-        raise ValueError("--cwd is required unless --resume is given")
+        args.pass_env = args.pass_env or parent.get("pass_env", [])
     args.sandbox = args.sandbox or "workspace-write"
     cwd = Path(args.cwd).expanduser().resolve(strict=True)
     if not cwd.is_dir():
@@ -322,19 +307,20 @@ def launch(args, root):
                  ephemeral=args.ephemeral, resumed_from=args.resume,
                  resume_thread=resume_thread, thread_id=None,
                  pass_env=sorted(set(args.pass_env)), created_at=now(), started_at=None, finished_at=None,
-                 launcher_pid=os.getpid(), worker_pid=None, codex_pid=None,
-                 process_group_id=None, exit_code=None)
-    save_state(path, state)
-    for name in ("events.jsonl", "stderr.log"):
+                 worker_pid=None, codex_pid=None, exit_code=None)
+    for name in ("events.jsonl", "stderr.log", "worker.lock"):
         (path / name).touch(mode=0o600)
     proc = None
     try:
-        with (path / "stderr.log").open("ab") as errors:
+        # Locked before the state exists, so a reader never sees an unlocked live job.
+        with (path / "worker.lock").open("rb") as lock, (path / "stderr.log").open("ab") as errors:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            save_state(path, state)
             proc = subprocess.Popen([sys.executable, str(Path(__file__).resolve()),
                                      "_worker", str(path)],
                                     stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                     stderr=errors, env=clean_env(args.pass_env), cwd="/",
-                                    start_new_session=True)
+                                    pass_fds=[lock.fileno()], start_new_session=True)
         # Nonblocking writes keep even a stalled worker from hanging launch.
         os.set_blocking(proc.stdin.fileno(), False)
         remaining = memoryview(prompt)
@@ -412,7 +398,10 @@ def main():
     # Internal entry point deliberately absent from the public parser/help.
     if len(sys.argv) == 3 and sys.argv[1] == "_worker":
         return worker(Path(sys.argv[2]))
-    args = parser().parse_args()
+    cli = parser()
+    args = cli.parse_args()
+    if args.command == "launch" and not (args.cwd or args.resume):
+        cli.error("launch needs --cwd unless --resume is given")
     root = root_path()
     try:
         if args.command == "launch":
@@ -422,7 +411,10 @@ def main():
             if root.exists():
                 for path in sorted(root.iterdir()):
                     if SAFE_NAME.fullmatch(path.name) and path.is_dir() and not path.is_symlink():
-                        states.append(current_state(path))
+                        try:
+                            states.append(current_state(path))
+                        except (OSError, ValueError):
+                            pass  # A launcher killed mid-creation leaves a stateless directory.
             states.sort(key=lambda state: state.get("created_at", ""), reverse=True)
             emit(states)
             return 0
