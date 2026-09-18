@@ -63,6 +63,26 @@ Read `<out>.md` (the delegate's final message) and nothing else by default; the 
 - Bound any command that can hang on external state (network, a container daemon, a remote host): `timeout <seconds> <cmd>` on Linux, `gtimeout` from coreutils on macOS. A retry loop around an unbounded probe is still unbounded; bound each probe, not just the loop.
 - Scripts launched in the background must terminate on every outcome: success, known failure signatures, and a hard iteration cap. Silence is not success.
 
+## Git and GitHub
+
+- Commit messages are for someone reading the log a year from now. The subject line says what changed in plain words, in the imperative, under about 70 characters. The body says why, and anything a reader could not get from the diff. No vague subjects ("fix stuff", "updates", "wip"), and no labels coined mid-session.
+- One commit is one coherent change. Do not bundle unrelated edits, and do not commit files you did not mean to touch.
+- Use `gh` for everything on GitHub: creating, viewing, and merging PRs, reading review comments, inspecting CI runs and their logs (`gh pr view`, `gh pr checks`, `gh run view --log-failed`, `gh api`). Do not guess at state you can query.
+- Never force push on your own, including `--force-with-lease`. If a force push looks unavoidable (a rebase or amend of commits already pushed, a rewritten history), stop before doing it. Tell the user what happened, why a normal push no longer works, and what the options are, then wait for their decision.
+- Prefer fixing forward with a new commit over rewriting commits that are already pushed; that is what keeps force pushes avoidable.
+
+### Pull request descriptions
+
+Write in simple language for a reader who has not seen the work. Cover, in this order:
+
+- **What**: the change, in a sentence or two.
+- **Why**: the problem or need behind it.
+- **How**: the approach, and anything in the diff that would surprise a reviewer.
+- **Testing and verification**: everything actually run or checked, with the outcome. Name what was not tested.
+- **Tradeoffs**: alternatives considered, what was given up, known limitations, and follow-ups left out of scope.
+
+The title follows the commit subject rules. Keep the description current when later commits change the PR's scope.
+
 ## Final summary
 
 Terse shorthand between tool calls is fine; that is thinking out loud. The final message is different: it is for a reader who saw none of it, and after a long unattended stretch it is their first look at the work. Write it as a re-grounding, not a continuation of the working thread.
