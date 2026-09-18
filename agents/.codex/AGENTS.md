@@ -23,7 +23,7 @@ Delegation is per phase, not per task. The ambiguity that keeps design work inli
 
 - Trivial lookups (one grep or glob answers it): inline. Spawning anything costs more than the search.
 - Exploration and investigation (how does X work, where does Y happen, trace this flow): `codex exec -s read-only`. Fan out independent questions as parallel background calls. Ask for conclusions with file and line references, not file contents.
-- Implementation from a settled spec (roughly three or more files of work that is mechanical once specced): `codex exec -s workspace-write`. Stay inline only when the edits are entangled with live iterative state (a tight test-and-tweak loop, debugging a remote box) or the code is user-facing.
+- Implementation from a settled spec (roughly three or more files of work that is mechanical once specced): a `delegate-codex` job with `--sandbox workspace-write` (see Long delegations). The orchestrator plans and settles the design in the session; the delegate writes the code. Stay inline only when the edits are entangled with live iterative state (a tight test-and-tweak loop, debugging a remote box) or the code is user-facing.
 - Second-opinion review: after every substantial change is complete, run `codex exec -s read-only` (or `codex review`) with a review prompt and surface its findings. Put simplification first: what can be deleted, collapsed, or replaced by one validated path, not just what is broken. The orchestrator still reviews the final diff itself.
 - Long operations (deploys, builds, pulls, anything that mostly waits): launch in the background, then keep the current turn active with bounded foreground waits until the outcome is verified.
 
@@ -57,6 +57,27 @@ codex exec --skip-git-repo-check -C <dir> -s <read-only|workspace-write> \
 ```
 
 Read `<out>.md` (the delegate's final message) and nothing else by default; the JSONL event log is for diagnosing a run. The `< /dev/null` is required: codex reads stdin even with a prompt argument and waits forever on an idle pipe. Follow-ups continue the same thread rather than starting a fresh prompt: take the thread id from the first `--json` event (or use `codex exec resume --last`) and run `codex exec resume <thread-id> "<prompt>" < /dev/null`, repeating the effort flag. Independent delegations are separate processes; fan them out in parallel.
+
+### Long delegations
+
+Anything expected to run longer than about ten minutes, and every implementation handoff, goes through `delegate-codex` (in the dotfiles `scripts/bin`) instead of a bare `codex exec`. The job runs detached from the orchestrator's shell, so it survives a tool timeout or a closed turn, and it always ends: it is bounded by `--max-runtime` (default four hours) and by `--idle-timeout` (default thirty minutes without a Codex event). If `delegate-codex` is not on `PATH`, fall back to the bare `codex exec` form above.
+
+```bash
+job=$(delegate-codex launch --cwd <dir> --label <name> --sandbox <read-only|workspace-write> \
+  --reasoning <level> < <spec-file-or-heredoc>)
+delegate-codex join "$job" --timeout 540   # exit 75 means still running; repeat
+delegate-codex inspect "$job"              # state, last event time, last agent message
+delegate-codex result "$job"               # the delegate's final report
+delegate-codex launch --resume "$job" < <feedback>   # the one retry, same thread and context
+delegate-codex cancel "$job"
+```
+
+- The prompt is the full handoff contract, written once the plan is settled. For a long job also name the branch or worktree to work in, tell the delegate to commit nothing unless asked, and tell it to stop and report rather than widen scope when the spec turns out wrong.
+- Give each concurrent write job its own git worktree. Two delegates, or a delegate and the orchestrator, editing one working tree corrupt each other's work.
+- Join with bounded waits from the open turn. Between joins, do only work that does not touch the delegate's files. Exit codes: 0 succeeded, 75 still live, 87 timed out, 125 runner failure or lost worker, 130 cancelled, anything else is Codex's own exit code.
+- `succeeded` means only that Codex exited cleanly. Read `result`, then review the diff and run the verify command yourself before reporting done; a delegate that was blocked still exits 0.
+- The delegate inherits the caller's `PATH` and nothing else from its environment. Forward a variable it needs by name with `--pass-env NAME`; never paste secrets into the prompt.
+- If `inspect` shows no recent event and a stale last message, cancel and retry with feedback rather than waiting out the runtime cap.
 
 ## Long-running commands
 

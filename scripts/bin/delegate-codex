@@ -1,0 +1,453 @@
+#!/usr/bin/env python3
+"""Detached, bounded Codex jobs for Fable and other shell callers (POSIX)."""
+
+import argparse
+from datetime import datetime, timezone
+import json
+import math
+import os
+from pathlib import Path
+import pwd
+import re
+import selectors
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import uuid
+
+
+LIVE = {"queued", "running"}
+SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
+GRACE = 2.0
+POLL = 0.2
+QUEUE_GRACE = 30.0
+SANDBOXES = ["read-only", "workspace-write", "danger-full-access"]
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def safe_name(value):
+    if not SAFE_NAME.fullmatch(value):
+        raise argparse.ArgumentTypeError("use 1-64 letters, digits, underscores or hyphens; start with a letter or digit")
+    return value
+
+
+def seconds(value):
+    value = float(value)
+    if not math.isfinite(value) or value <= 0:
+        raise argparse.ArgumentTypeError("seconds must be finite and greater than zero")
+    return value
+
+
+def seconds_or_zero(value):
+    return 0.0 if float(value) == 0 else seconds(value)
+
+
+def env_name(value):
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+        raise argparse.ArgumentTypeError("not an environment variable name")
+    return value
+
+
+def clean_env(pass_env=()):
+    # Do not copy the caller's environment, including API keys and CODEX_HOME.
+    # PATH is forwarded so the delegate finds the same toolchain as the caller;
+    # anything else must be named with --pass-env. Values live only in the
+    # worker's process environment, never in state.json.
+    env = {"HOME": pwd.getpwuid(os.getuid()).pw_dir,
+           "PATH": os.environ.get("PATH") or os.defpath, "LANG": "C.UTF-8"}
+    env.update((name, os.environ[name]) for name in pass_env if name in os.environ)
+    return env
+
+
+def root_path():
+    return Path(os.environ.get("DELEGATE_JOB_ROOT",
+                              str(Path.home() / ".local/state/delegate-codex"))).expanduser().resolve()
+
+
+def job_path(root, job_id):
+    safe_name(job_id)
+    path = root / job_id
+    if path.is_symlink() or not path.is_dir():
+        raise ValueError("unknown job: " + job_id)
+    return path
+
+
+def read_state(path):
+    return json.loads((path / "state.json").read_text())
+
+
+def save_state(path, state, **changes):
+    state.update(changes, updated_at=now())
+    temp = path / (".state-" + uuid.uuid4().hex)
+    try:
+        with temp.open("x") as stream:
+            json.dump(state, stream, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, path / "state.json")
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    return True
+
+
+def current_state(path):
+    """Read state; a live job whose worker is gone (SIGKILL, reboot) becomes lost."""
+    state = read_state(path)
+    if state["status"] not in LIVE:
+        return state
+    pid = state.get("worker_pid")
+    if pid is None:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(state["created_at"])).total_seconds()
+        gone = age > QUEUE_GRACE
+    else:
+        gone = not alive(pid)
+    if gone:
+        state = read_state(path)  # The worker may have finished between the two reads.
+        if state["status"] in LIVE:
+            save_state(path, state, status="lost", exit_code=125, finished_at=now())
+    return state
+
+
+def thread_id(path):
+    try:
+        with (path / "events.jsonl").open() as stream:
+            for line in stream:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(event, dict) and event.get("type") == "thread.started":
+                    return event.get("thread_id")
+    except OSError:
+        pass
+    return None
+
+
+def progress(path):
+    """Cheap liveness view for long jobs: last event time and last agent message."""
+    events = path / "events.jsonl"
+    info = {"last_event_at": datetime.fromtimestamp(events.stat().st_mtime, timezone.utc).isoformat(),
+            "last_message": None}
+    with events.open("rb") as stream:
+        stream.seek(max(0, events.stat().st_size - 262144))
+        for line in reversed(stream.read().splitlines()):
+            try:
+                item = json.loads(line).get("item") or {}
+            except (ValueError, AttributeError):
+                continue
+            if item.get("type") == "agent_message":
+                info["last_message"] = (item.get("text") or "")[-600:]
+                break
+    return info
+
+
+def emit(value):
+    print(json.dumps(value, indent=2))
+
+
+def stop_group(proc):
+    """Signal the owned group, even if its leader exited before its children."""
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        proc.wait()
+        return
+    deadline = time.monotonic() + GRACE
+    while time.monotonic() < deadline:
+        proc.poll()
+        try:
+            os.killpg(proc.pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    proc.wait(timeout=GRACE)
+
+
+def worker(path):
+    state = read_state(path)
+    proc = None
+    interrupted = False
+
+    def interrupt(_signum, _frame):
+        nonlocal interrupted
+        interrupted = True
+
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, interrupt)
+    deadline = time.monotonic() + state["max_runtime"]
+    events_path = path / "events.jsonl"
+
+    def stopping():
+        if interrupted or (path / "cancel.request").exists():
+            return "cancelled", 130
+        if time.monotonic() >= deadline:
+            state["timeout_reason"] = "max_runtime"
+            return "timed_out", 87
+        # Codex emits an event per step; prolonged silence means a hung run.
+        if proc is not None and state["idle_timeout"] and \
+                time.time() - events_path.stat().st_mtime >= state["idle_timeout"]:
+            state["timeout_reason"] = "idle"
+            return "timed_out", 87
+        return None
+
+    status, code = "failed", 125
+    try:
+        save_state(path, state, worker_pid=os.getpid(), started_at=now())
+        # Read the anonymous pipe with a deadline, including incomplete launchers.
+        chunks = []
+        with selectors.DefaultSelector() as selector:
+            selector.register(sys.stdin.buffer, selectors.EVENT_READ)
+            while not stopping():
+                if selector.select(0.05):
+                    chunk = os.read(sys.stdin.fileno(), 65536)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+        prompt = b"".join(chunks)
+        del chunks
+        if stopping():
+            status, code = stopping()
+        else:
+            # `exec resume` has no -C/-s; config overrides and cwd cover both forms.
+            command = [state["codex"], "exec"]
+            if state["resume_thread"]:
+                command += ["resume", state["resume_thread"]]
+            else:
+                command += ["-C", state["cwd"]]
+            command += ["--skip-git-repo-check",
+                        "-c", 'sandbox_mode="' + state["sandbox"] + '"',
+                        "-c", "model_reasoning_effort=" + state["reasoning"],
+                        "-c", 'approval_policy="never"', "--json",
+                        "-o", str(path / "result.md")]
+            if state["ephemeral"]:
+                command.append("--ephemeral")
+            if state["model"]:
+                command += ["--model", state["model"]]
+            command.append("-")
+            with (path / "events.jsonl").open("ab") as events, (path / "stderr.log").open("ab") as errors:
+                os.utime(events_path)  # The idle clock starts at spawn.
+                proc = subprocess.Popen(command, cwd=state["cwd"], env=dict(os.environ),
+                                        stdin=subprocess.PIPE, stdout=events,
+                                        stderr=errors, start_new_session=True)
+                save_state(path, state, status="running", codex_pid=proc.pid,
+                           process_group_id=proc.pid)
+                first = True
+                while True:
+                    stop = stopping()
+                    if stop:
+                        status, code = stop
+                        break
+                    try:
+                        proc.communicate(input=prompt if first else None, timeout=POLL)
+                        code = proc.returncode
+                        code = code if code >= 0 else 128 - code
+                        status = "succeeded" if code == 0 else "failed"
+                        if code == 0 and not (path / "result.md").is_file():
+                            status, code = "failed", 125
+                        break
+                    except subprocess.TimeoutExpired:
+                        first = False
+    except Exception as exc:
+        # Exception messages can contain command/input details; persist only type.
+        state["runner_error"] = type(exc).__name__
+        status, code = "failed", 125
+    finally:
+        if proc is not None:
+            try:
+                stop_group(proc)
+            except Exception as exc:
+                state["runner_error"] = type(exc).__name__
+                status, code = "failed", 125
+            if proc.stdin:
+                proc.stdin.close()
+        save_state(path, state, status=status, exit_code=code, finished_at=now(),
+                   thread_id=thread_id(path))
+    return 0
+
+
+def launch(args, root):
+    resume_thread = None
+    if args.resume:
+        # A follow-up continues the earlier job's Codex thread, keeping its context.
+        parent = current_state(job_path(root, args.resume))
+        if parent["status"] in LIVE:
+            raise ValueError("cannot resume a live job: " + args.resume)
+        resume_thread = parent.get("thread_id")
+        if not resume_thread or parent.get("ephemeral"):
+            raise ValueError("job has no resumable Codex thread: " + args.resume)
+        args.cwd = args.cwd or parent["cwd"]
+        args.sandbox = args.sandbox or parent["sandbox"]
+        args.model = args.model or parent["model"]
+    if not args.cwd:
+        raise ValueError("--cwd is required unless --resume is given")
+    args.sandbox = args.sandbox or "workspace-write"
+    cwd = Path(args.cwd).expanduser().resolve(strict=True)
+    if not cwd.is_dir():
+        raise ValueError("cwd must be a directory")
+    codex = shutil.which(args.codex)
+    if not codex:
+        raise ValueError("codex executable not found")
+    # Read before creating a job, and never put the prompt in argv or a file.
+    prompt = sys.stdin.buffer.read()
+    if not prompt.strip():
+        raise ValueError("provide a nonempty prompt on stdin")
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    job_id = uuid.uuid4().hex
+    path = root / job_id
+    path.mkdir(mode=0o700)
+    state = dict(job_id=job_id, label=args.label, status="queued", cwd=str(cwd),
+                 codex=os.path.abspath(codex), sandbox=args.sandbox,
+                 reasoning=args.reasoning, model=args.model,
+                 max_runtime=args.max_runtime, idle_timeout=args.idle_timeout,
+                 ephemeral=args.ephemeral, resumed_from=args.resume,
+                 resume_thread=resume_thread, thread_id=None,
+                 pass_env=sorted(set(args.pass_env)), created_at=now(), started_at=None, finished_at=None,
+                 launcher_pid=os.getpid(), worker_pid=None, codex_pid=None,
+                 process_group_id=None, exit_code=None)
+    save_state(path, state)
+    for name in ("events.jsonl", "stderr.log"):
+        (path / name).touch(mode=0o600)
+    proc = None
+    try:
+        with (path / "stderr.log").open("ab") as errors:
+            proc = subprocess.Popen([sys.executable, str(Path(__file__).resolve()),
+                                     "_worker", str(path)],
+                                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                    stderr=errors, env=clean_env(args.pass_env), cwd="/",
+                                    start_new_session=True)
+        # Nonblocking writes keep even a stalled worker from hanging launch.
+        os.set_blocking(proc.stdin.fileno(), False)
+        remaining = memoryview(prompt)
+        deadline = time.monotonic() + 10
+        with selectors.DefaultSelector() as selector:
+            selector.register(proc.stdin, selectors.EVENT_WRITE)
+            while remaining:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("worker did not receive prompt")
+                if selector.select(0.05):
+                    sent = os.write(proc.stdin.fileno(), remaining[:65536])
+                    remaining = remaining[sent:]
+        proc.stdin.close()
+    except Exception:
+        if proc is None:
+            save_state(path, state, status="failed", exit_code=125, finished_at=now())
+        else:
+            (path / "cancel.request").touch(mode=0o600, exist_ok=True)
+            proc.stdin.close()
+        print(job_id)
+        return 125
+    print(job_id)
+    return 0
+
+
+def join(paths, timeout):
+    deadline = time.monotonic() + timeout
+    while True:
+        states = [current_state(path) for path in paths]
+        if all(state["status"] not in LIVE for state in states):
+            emit(states[0] if len(states) == 1 else states)
+            return next((state["exit_code"] for state in states
+                         if state["exit_code"] != 0), 0)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            emit(states[0] if len(states) == 1 else states)
+            return 75
+        time.sleep(min(POLL, remaining))
+
+
+def parser():
+    cli = argparse.ArgumentParser(description=__doc__)
+    commands = cli.add_subparsers(dest="command", required=True)
+    start = commands.add_parser("launch", help="read prompt from stdin; print a detached job ID")
+    start.add_argument("--cwd", help="working directory (required unless --resume)")
+    start.add_argument("--resume", type=safe_name, metavar="JOB_ID",
+                       help="continue a finished job's Codex thread; inherits its cwd, sandbox and model")
+    start.add_argument("--label", type=safe_name, default="codex")
+    start.add_argument("--sandbox", choices=SANDBOXES, help="default: workspace-write")
+    start.add_argument("--reasoning", choices=["low", "medium", "high", "xhigh"], default="high")
+    start.add_argument("--model", help="optional Codex model override")
+    start.add_argument("--max-runtime", type=seconds, default=14400)
+    start.add_argument("--idle-timeout", type=seconds_or_zero, default=1800,
+                       help="stop after this many seconds without a Codex event; 0 disables")
+    start.add_argument("--pass-env", type=env_name, action="append", default=[], metavar="NAME",
+                       help="forward one caller environment variable (repeatable)")
+    start.add_argument("--ephemeral", action="store_true",
+                       help="keep no Codex session file; the job cannot be resumed")
+    start.add_argument("--codex", default="codex", help="Codex executable (default: resolve codex on PATH)")
+    for name, help_text in [("join", "wait a bounded time; exit 75 if still live"),
+                            ("inspect", "print job state as JSON"),
+                            ("result", "print the final response after completion"),
+                            ("cancel", "request cancellation and wait a bounded time")]:
+        command = commands.add_parser(name, help=help_text)
+        command.add_argument("job_id", type=safe_name,
+                             nargs="+" if name == "join" else None)
+        if name in {"join", "cancel"}:
+            command.add_argument("--timeout", type=seconds, default=10)
+    commands.add_parser("list", help="list job states as JSON")
+    return cli
+
+
+def main():
+    os.umask(0o077)
+    # Internal entry point deliberately absent from the public parser/help.
+    if len(sys.argv) == 3 and sys.argv[1] == "_worker":
+        return worker(Path(sys.argv[2]))
+    args = parser().parse_args()
+    root = root_path()
+    try:
+        if args.command == "launch":
+            return launch(args, root)
+        if args.command == "list":
+            states = []
+            if root.exists():
+                for path in sorted(root.iterdir()):
+                    if SAFE_NAME.fullmatch(path.name) and path.is_dir() and not path.is_symlink():
+                        states.append(current_state(path))
+            states.sort(key=lambda state: state.get("created_at", ""), reverse=True)
+            emit(states)
+            return 0
+        if args.command == "join":
+            return join([job_path(root, job_id) for job_id in args.job_id],
+                        args.timeout)
+        path = job_path(root, args.job_id)
+        state = current_state(path)
+        if args.command == "inspect":
+            emit(dict(state, **progress(path)))
+            return 0
+        if args.command == "cancel":
+            if state["status"] in LIVE:
+                (path / "cancel.request").touch(mode=0o600, exist_ok=True)
+            return join([path], args.timeout)
+        if state["status"] in LIVE:
+            return 75
+        result = path / "result.md"
+        if result.is_file():
+            sys.stdout.write(result.read_text())
+        return state["exit_code"]
+    except (OSError, ValueError) as exc:
+        print("delegate-codex: " + str(exc), file=sys.stderr)
+        return 125
+
+
+if __name__ == "__main__":
+    sys.exit(main())
