@@ -101,6 +101,12 @@ delegate-codex cancel "$job"
 
 ### Pull requests
 
+Whether a change needs a pull request depends on the repo, not on habit. A repo's own `CLAUDE.md` or `AGENTS.md` can settle it either way.
+
+- Shared and work repos: always a pull request. Never commit to the default branch.
+- Repos only the user maintains: commit to the default branch when the user is present in the session and asked for the change. Use a pull request instead when any of these hold: the repo has CI or deploys from its default branch; the work was unattended or done by a delegate; the change is large or risky; another agent session may be active in the repo; or the user asks for one.
+- Either way, push only when asked.
+
 Open and update pull requests with the `create-pr` skill when it is available; it holds the procedure and the description format. Without it: title by the commit subject rules, and a description in simple language covering what, why, how, testing and verification (only what was actually run, naming what was not), and tradeoffs. Keep the description current when later commits change the PR's scope.
 
 ## Final summary
