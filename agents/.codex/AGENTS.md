@@ -99,17 +99,9 @@ delegate-codex cancel "$job"
 - Never force push on your own, including `--force-with-lease`. If a force push looks unavoidable (a rebase or amend of commits already pushed, a rewritten history), stop before doing it. Tell the user what happened, why a normal push no longer works, and what the options are, then wait for their decision.
 - Prefer fixing forward with a new commit over rewriting commits that are already pushed; that is what keeps force pushes avoidable.
 
-### Pull request descriptions
+### Pull requests
 
-Write in simple language for a reader who has not seen the work. Cover, in this order:
-
-- **What**: the change, in a sentence or two.
-- **Why**: the problem or need behind it.
-- **How**: the approach, and anything in the diff that would surprise a reviewer.
-- **Testing and verification**: everything actually run or checked, with the outcome. Name what was not tested.
-- **Tradeoffs**: alternatives considered, what was given up, known limitations, and follow-ups left out of scope.
-
-The title follows the commit subject rules. Keep the description current when later commits change the PR's scope.
+Open and update pull requests with the `create-pr` skill when it is available; it holds the procedure and the description format. Without it: title by the commit subject rules, and a description in simple language covering what, why, how, testing and verification (only what was actually run, naming what was not), and tradeoffs. Keep the description current when later commits change the PR's scope.
 
 ## Final summary
 
