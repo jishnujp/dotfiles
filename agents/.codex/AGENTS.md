@@ -27,6 +27,13 @@ Delegation is per phase, not per task. The ambiguity that keeps design work inli
 - Second-opinion review: after every substantial change is complete, run `codex exec -s read-only` (or `codex review`) with a review prompt and surface its findings. Put simplification first: what can be deleted, collapsed, or replaced by one validated path, not just what is broken. The orchestrator still reviews the final diff itself.
 - Long operations (deploys, builds, pulls, anything that mostly waits): launch in the background, then keep the current turn active with bounded foreground waits until the outcome is verified.
 
+### Model
+
+Name the model on every codex call (`-m <model>`, or `--model` for `delegate-codex`); left unset, `codex exec` picks Astra, the most expensive one. `delegate-codex` defaults to Sol.
+
+- `gpt-5.6-sol`: the default. Exploration, and any implementation with a clear spec of what to build.
+- `gpt-6-astra`: only where a stronger second mind pays for itself, such as a second opinion on an architecture or on a judgement call of the orchestrator's, or a review of a risky change. Never for work Sol can do from the spec; it burns tokens fast.
+
 ### Effort
 
 Set reasoning effort explicitly on every codex call with `-c model_reasoning_effort=<level>`; an unpinned run applies no effort at all.
@@ -52,11 +59,11 @@ One retry with concrete failure feedback, then bring the work inline; the orches
 One `codex exec` invocation is one delegation. Run it as a background shell command when it may take more than a couple of minutes, then join it from the open turn.
 
 ```bash
-codex exec --skip-git-repo-check -C <dir> -s <read-only|workspace-write> \
+codex exec --skip-git-repo-check -C <dir> -s <read-only|workspace-write> -m <model> \
   -c model_reasoning_effort=<level> -o <out>.md --json "<prompt>" < /dev/null > <out>.events.jsonl
 ```
 
-Read `<out>.md` (the delegate's final message) and nothing else by default; the JSONL event log is for diagnosing a run. The `< /dev/null` is required: codex reads stdin even with a prompt argument and waits forever on an idle pipe. Follow-ups continue the same thread rather than starting a fresh prompt: take the thread id from the first `--json` event (or use `codex exec resume --last`) and run `codex exec resume <thread-id> "<prompt>" < /dev/null`, repeating the effort flag. Independent delegations are separate processes; fan them out in parallel.
+Read `<out>.md` (the delegate's final message) and nothing else by default; the JSONL event log is for diagnosing a run. The `< /dev/null` is required: codex reads stdin even with a prompt argument and waits forever on an idle pipe. Follow-ups continue the same thread rather than starting a fresh prompt: take the thread id from the first `--json` event (or use `codex exec resume --last`) and run `codex exec resume <thread-id> "<prompt>" < /dev/null`, repeating the model and effort flags. Independent delegations are separate processes; fan them out in parallel.
 
 ### Long delegations
 
@@ -64,7 +71,7 @@ Anything expected to run longer than about ten minutes, and every implementation
 
 ```bash
 job=$(delegate-codex launch --cwd <dir> --label <name> --sandbox <read-only|workspace-write> \
-  --reasoning <level> < <spec-file-or-heredoc>)
+  --reasoning <level> [--model gpt-6-astra] < <spec-file-or-heredoc>)
 delegate-codex join "$job" --timeout 540   # exit 75 means still running; repeat
 delegate-codex inspect "$job"              # state, last event time, last agent message
 delegate-codex result "$job"               # the delegate's final report

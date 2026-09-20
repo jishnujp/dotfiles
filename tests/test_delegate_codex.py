@@ -203,6 +203,8 @@ class DelegateTests(unittest.TestCase):
         self.assertEqual(self.run_cli("join", job, "--timeout", "5").returncode, 0)
         event = json.loads((self.root / job / "events.jsonl").read_text())
         self.assertTrue(event["path"].startswith("/opt/delegate-tools:"))
+        # No --model: the cheap default, never Codex's own (most expensive) default.
+        self.assertEqual(event["argv"][event["argv"].index("--model") + 1], "gpt-5.6-sol")
         self.assertIn("DELEGATE_EXTRA", event["env_keys"])
         self.assertNotIn("DELEGATE_SECRET", event["env_keys"])
         self.assertNotIn("DELEGATE_UNSET", event["env_keys"])
