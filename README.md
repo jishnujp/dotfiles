@@ -82,6 +82,7 @@ Current commands include:
 - `simple-server` — start a tiny local HTTP response on port `1500`
 - `pi-workflow-init` — helper for Pi workflow setup
 - `delegate-codex` — run bounded, detached Codex jobs from Fable or a shell (Python 3.9+, POSIX)
+- `delegation-ledger` — build a per-run ledger (model, effort, task type, time, token split, cost) from the Codex and Claude Code logs already on disk, then query or report it (Python 3.9+)
 
 The scripts in `scripts/bin/` and `scripts/cron/` are Linux-oriented (they assume `wmctrl`, GNOME `gsettings`, `sha1sum`, and `/home/<user>` paths) and have not been made macOS-portable. Cron helpers live in `scripts/cron/`, are not installed automatically — review/edit paths before adding them to your crontab.
 
@@ -205,6 +206,47 @@ Verify without API calls:
 python3 -m unittest discover -s tests -p 'test_delegate_codex.py' -v
 python3 -m py_compile scripts/bin/delegate-codex tests/test_delegate_codex.py
 scripts/bin/delegate-codex --help
+```
+
+### Delegation ledger
+
+`delegation-ledger` answers "which model did what, for how long, at what token cost"
+without any new instrumentation. It reads the delegate-codex job directories, every
+Codex session rollout under `~/.codex/sessions`, and every Claude Code transcript
+under `~/.claude/projects` (subagent transcripts included), and writes one JSON row
+per run: source, model, effort, sandbox, a heuristic task type (review, exploration,
+implementation, other), active minutes, tokens split into uncached input, cache
+reads, cache writes, output and reasoning, an estimated API cost, and for Codex the
+share of the weekly subscription window the run consumed.
+
+```bash
+ln -s ~/dotfiles/scripts/bin/delegation-ledger ~/.local/bin/delegation-ledger
+
+delegation-ledger build -o ~/ledgers/before.jsonl --snapshot before   # freeze a baseline
+delegation-ledger build -o ~/ledgers/after.jsonl --since 2026-09-24    # after a model switch
+delegation-ledger report ~/ledgers/before.jsonl ~/ledgers/after.jsonl -o compare.md
+
+# slices for a person or an LLM to analyse
+delegation-ledger query before.jsonl --task-type implementation --group-by model,effort
+delegation-ledger query before.jsonl --model gpt-6-sol,gpt-5.6-sol --since 2026-09-20 --format csv
+delegation-ledger query before.jsonl --min-tokens 1000000 --source delegate-codex --format markdown
+delegation-ledger query before.jsonl --group-by day,model
+```
+
+The report opens with a "how to read" section, then summaries by task type, by
+snapshot and model, and by day, then the rows newest first with the prompt head, so
+it can be pasted into a chat as-is. Task type is a keyword heuristic over the prompt,
+label and sandbox; re-classify from `prompt_head` where it is wrong. Cost uses list
+API prices, which both vendors also use, near enough, to meter subscription windows.
+Claude Code prunes transcripts after 30 days by default, so build a snapshot before
+they age out. Codex splits one session across several rollout files; the ledger
+merges them so a delegation's tokens are counted once.
+
+Verify without API calls:
+
+```bash
+python3 -m unittest discover -s tests -p 'test_delegation_ledger.py' -v
+python3 -m py_compile scripts/bin/delegation-ledger tests/test_delegation_ledger.py
 ```
 
 ## Shell local config
