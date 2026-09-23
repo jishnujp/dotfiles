@@ -25,7 +25,7 @@ GRACE = 2.0
 POLL = 0.2
 # The cheap workhorse unless the caller asks for more; Codex's own default is its
 # most expensive model. Override per job with --model or per host with the variable.
-DEFAULT_MODEL = os.environ.get("DELEGATE_CODEX_MODEL") or "gpt-5.6-sol"
+DEFAULT_MODEL = os.environ.get("DELEGATE_CODEX_MODEL") or "gpt-6-sol"
 SANDBOXES = ["read-only", "workspace-write", "danger-full-access"]
 
 

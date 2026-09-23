@@ -31,16 +31,23 @@ Delegation is per phase, not per task. The ambiguity that keeps design work inli
 
 Name the model on every codex call (`-m <model>`, or `--model` for `delegate-codex`); left unset, `codex exec` picks Astra, the most expensive one. `delegate-codex` defaults to Sol.
 
-- `gpt-5.6-sol`: the default. Exploration, and any implementation with a clear spec of what to build.
-- `gpt-6-astra`: only where a stronger second mind pays for itself, such as a second opinion on an architecture or on a judgement call of the orchestrator's, or a review of a risky change. Never for work Sol can do from the spec; it burns tokens fast.
+- `gpt-6-sol`: the default. Exploration, and any implementation with a clear spec of what to build. It replaced `gpt-5.6-sol` on 2026-09-23 at half the price for the same or a slightly better coding score.
+- `gpt-6-luna`: mechanical bulk work where no judgement is needed: lookups, read-only fan-out exploration, fixture and data edits, migrations from a settled plan, summarising long output. A task costs cents and about a seventieth of an Astra message against the shared Codex window, so it is also the fallback when Codex reports the window running low. It regressed on hard coding; never for implementation that involves design choices.
+- `gpt-6-astra`: only where a stronger second mind pays for itself, such as a second opinion on an architecture or on a judgement call of the orchestrator's, or a review of a risky change. Never for work Sol can do from the spec; one Astra message costs about three Sol messages of window.
+- `gpt-5.6-sol`: named fallback until 2026-10-01 if `gpt-6-sol` regresses on a workload you measured with `delegation-ledger`; then drop it.
+
+Claude subagents (the Agent tool) run on Claude Opus 5.5 when `opus` is named; keep them at `medium` or `high` effort, never `xhigh` or `max`, which think longer per turn on Opus 5.5 than they did on Opus 5. Fable 5.1 stays the orchestrator; its value is judgement on ambiguous work, not raw benchmark lead, and it draws about twice the weekly plan allowance per unit of work that Opus does.
+
+Before and after any model or effort change, freeze a snapshot with `delegation-ledger build` and compare with `delegation-ledger report`, within a task type; a run with more tokens is not worse if it finished a bigger task.
 
 ### Effort
 
 Set reasoning effort explicitly on every codex call with `-c model_reasoning_effort=<level>`; an unpinned run applies no effort at all.
 
 - `low` or `medium`: mechanical work with a clear spec, fixture and data edits, migrations, ops sequences.
-- `high`: the default for ordinary implementation and investigation.
-- `xhigh`: review, architecture decisions, anything ambiguous.
+- `high`: the default for ordinary implementation and investigation. Also the ceiling for Astra: its top levels triple the window cost for a few points.
+- `xhigh`: review, architecture decisions, anything ambiguous, on Sol.
+- Luna runs at `high` or `max`; lower levels lose accuracy and its per-task cost is trivial either way.
 
 ### Handoff contract
 

@@ -123,9 +123,10 @@ Launch defaults to `--sandbox workspace-write`, `--reasoning high`,
 stops a run that has emitted no Codex event for that long (a hung network call, a
 wedged command); pass `--idle-timeout 0` to disable it when a single step, such as
 a long build, is expected to stay silent for longer. Use `--sandbox read-only` for
-investigation. The model defaults to `gpt-5.6-sol`, which is enough for work with
-a clear spec; pass `--model gpt-6-astra` for the occasional second opinion or
-architecture review, or set `DELEGATE_CODEX_MODEL` to change the default on a host.
+investigation. The model defaults to `gpt-6-sol`, which is enough for work with
+a clear spec; pass `--model gpt-6-luna` for mechanical bulk work and `--model
+gpt-6-astra` for the occasional second opinion or architecture review, or set
+`DELEGATE_CODEX_MODEL` to change the default on a host.
 Left to itself `codex exec` would pick Astra, its most expensive model, every time.
 `--codex /absolute/path/to/codex` selects another executable. Cwd, sandbox, reasoning,
 JSON events, and the final-response path are explicit in every `codex exec` call.
