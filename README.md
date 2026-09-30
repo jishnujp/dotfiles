@@ -27,7 +27,7 @@ git clone https://github.com/jishnujp/dotfiles.git ~/dotfiles && cd ~/dotfiles &
   - `shell` → `~/.shell_common.sh` (shared aliases/env sourced by bash **and** zsh)
   - `nvim` → `~/.config/nvim`
   - `tmux` → `~/.tmux.conf`
-  - `agents` → `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` (one shared file of global agent instructions), `~/.claude/skills/create-pr`
+  - `agents` → `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` (one shared file of global agent instructions), `~/.claude/skills/create-pr`, `~/.claude/skills/weekend-cleanup`
 - Does **not** stow `scripts/`, `ai/`, `assets/`, or `docs/`.
 - Does **not** manage git config; set `~/.gitconfig` up per machine.
 - The managed `~/.bashrc` / `~/.zshrc` add `~/dotfiles/scripts/bin` to `PATH` and source `~/.bashrc.local` / `~/.zshrc.local` when present.
