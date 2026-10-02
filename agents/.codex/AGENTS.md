@@ -98,6 +98,10 @@ delegate-codex cancel "$job"
 - Bound any command that can hang on external state (network, a container daemon, a remote host): `timeout <seconds> <cmd>` on Linux, `gtimeout` from coreutils on macOS. A retry loop around an unbounded probe is still unbounded; bound each probe, not just the loop.
 - Scripts launched in the background must terminate on every outcome: success, known failure signatures, and a hard iteration cap. Silence is not success.
 
+## Messaging Jishnu
+
+- To message or alert Jishnu, or post in a Buzz channel, use `buzz-post` (skill `buzz-post`; devbox only). It goes to Jishnu by default; post in a public channel only when the task names it.
+
 ## Git and GitHub
 
 - Commit messages are for someone reading the log a year from now. The subject line says what changed in plain words, in the imperative, under about 70 characters. The body says why, and anything a reader could not get from the diff. No vague subjects ("fix stuff", "updates", "wip"), and no labels coined mid-session.
