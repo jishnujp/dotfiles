@@ -8,10 +8,18 @@ Shared by Claude Code (`~/.claude/CLAUDE.md`) and Codex (`~/.codex/AGENTS.md`). 
 - Every background task, subagent, or delegate you started is joined before the final answer. Read its result back in the turn; a completion notification is a wake signal, not proof.
 - Keep the turn open with bounded waits until the outcome is verified. Do not end the turn and hope a notification brings you back.
 - When the acceptance criterion is a metric, eval, or benchmark, make it independently checkable. A delegate can satisfy a measure by gaming it.
+- A reported bug is fixed only when the user's failing case passes on the build they use. For a live system, find the deployed revision first; local `HEAD` is not what is running.
+- Put the denominator, the label source, and how much was actually reviewed next to every headline number, and lead with the metric for the user's real question. "Reviewed" means every item; otherwise say "sampled".
+
+## Scope and permission
+
+- Memory notes are context, not permission. A budget, approval, or exception recorded for one task does not carry over to another; ask before paid API spend the current task has not authorised.
+- Documents the project will need later (specs, models, plans, guides) are saved as files in the project. A cloud doc or artifact can be an extra copy, never the only one.
+- After a tool is denied by the permission mode, switch tools; do not retry the same kind of call.
 
 ## Delegation
 
-Claude Code is the orchestrator. Codex (`codex exec`) is the delegate. If codex is not installed or not permitted in the current environment, use a Claude Code subagent for the same job with the same contracts below.
+Claude Code is the orchestrator. Codex (`codex exec`) is the delegate. If codex is not installed or not permitted in the current environment, or the project's instructions name a different worker, use a Claude Code subagent for the same job with the same contracts below.
 
 The point of delegating is twofold: bulk tokens (file dumps, test output, exploration transcripts) stay out of the orchestrator's context, and independent work runs in parallel. Delegates return conclusions, not transcripts. Delegate proactively per these rules; do not ask first.
 
@@ -24,19 +32,18 @@ Delegation is per phase, not per task. The ambiguity that keeps design work inli
 - Trivial lookups (one grep or glob answers it): inline. Spawning anything costs more than the search.
 - Exploration and investigation (how does X work, where does Y happen, trace this flow): `codex exec -s read-only`. Fan out independent questions as parallel background calls. Ask for conclusions with file and line references, not file contents.
 - Implementation from a settled spec (roughly three or more files of work that is mechanical once specced): a `delegate-codex` job with `--sandbox workspace-write` (see Long delegations). The orchestrator plans and settles the design in the session; the delegate writes the code. Stay inline only when the edits are entangled with live iterative state (a tight test-and-tweak loop, debugging a remote box) or the code is user-facing.
-- Second-opinion review: after every substantial change is complete, run `codex exec -s read-only` (or `codex review`) with a review prompt and surface its findings. Put simplification first: what can be deleted, collapsed, or replaced by one validated path, not just what is broken. The orchestrator still reviews the final diff itself.
+- Second-opinion review: after every substantial change is complete, the orchestrator runs `codex exec -s read-only` (or `codex review`) with a review prompt and surfaces its findings. Put simplification first: what can be deleted, collapsed, or replaced by one validated path, not just what is broken. The orchestrator still reviews the final diff itself. A Codex delegate never launches `codex exec` itself; its sandbox cannot run it. It reports back and leaves review to the orchestrator.
 - Long operations (deploys, builds, pulls, anything that mostly waits): launch in the background, then keep the current turn active with bounded foreground waits until the outcome is verified.
 
 ### Model
 
 Name the model on every codex call (`-m <model>`, or `--model` for `delegate-codex`); left unset, `codex exec` picks Astra, the most expensive one. `delegate-codex` defaults to Sol.
 
-- `gpt-6-sol`: the default. Exploration, and any implementation with a clear spec of what to build. It replaced `gpt-5.6-sol` on 2026-09-23 at half the price for the same or a slightly better coding score.
+- `gpt-6-sol`: the default. Exploration, and any implementation with a clear spec of what to build.
 - `gpt-6-luna`: mechanical bulk work where no judgement is needed: lookups, read-only fan-out exploration, fixture and data edits, migrations from a settled plan, summarising long output. A task costs cents and about a seventieth of an Astra message against the shared Codex window, so it is also the fallback when Codex reports the window running low. It regressed on hard coding; never for implementation that involves design choices.
 - `gpt-6-astra`: only where a stronger second mind pays for itself, such as a second opinion on an architecture or on a judgement call of the orchestrator's, or a review of a risky change. Never for work Sol can do from the spec; one Astra message costs about three Sol messages of window.
-- `gpt-5.6-sol`: named fallback until 2026-10-01 if `gpt-6-sol` regresses on a workload you measured with `delegation-ledger`; then drop it.
 
-Claude subagents (the Agent tool) run on Claude Opus 5.5 when `opus` is named; keep them at `medium` or `high` effort, never `xhigh` or `max`, which think longer per turn on Opus 5.5 than they did on Opus 5. Fable 5.1 stays the orchestrator; its value is judgement on ambiguous work, not raw benchmark lead, and it draws about twice the weekly plan allowance per unit of work that Opus does.
+Claude subagents (the Agent tool) run on Claude Opus 5.5 when `opus` is named; keep them at `medium` or `high` effort, never `xhigh` or `max`. Fable 5.1 stays the orchestrator; its value is judgement on ambiguous work, not raw benchmark lead, and it draws about twice the weekly plan allowance per unit of work that Opus does.
 
 Before and after any model or effort change, freeze a snapshot with `delegation-ledger build` and compare with `delegation-ledger report`, within a task type; a run with more tokens is not worse if it finished a bigger task.
 
@@ -51,7 +58,9 @@ Set reasoning effort explicitly on every codex call with `-c model_reasoning_eff
 
 ### Handoff contract
 
-Every delegation prompt is self-contained; the delegate cannot see the orchestrator's conversation and cannot ask follow-ups. It must include: file paths, constraints and invariants, acceptance criteria, and the exact verify command(s). Size the task as a coherent slice with its tests, not micro-tasks. State scope discipline ("deliver what was asked, at the scope intended") and evidence-based completion ("report done only for work you can point to tool-result evidence for").
+Every delegation prompt is self-contained; the delegate cannot see the orchestrator's conversation and cannot ask follow-ups. It must include: file paths checked to exist in the delegate's checkout, constraints and invariants, acceptance criteria, and the exact verify command(s) with the interpreter or environment that runs them. Size the task as a coherent slice with its tests, not micro-tasks. This file and the repo's `AGENTS.md` already reach Codex, so do not restate them; spend the prompt on what is specific to the task.
+
+The Codex sandbox blocks listening sockets, Docker, package downloads, and writes outside the workspace, so dev servers, browser checks, and Docker-backed tests fail there. Hand the delegate only the checks it can run, and tell it which gates the orchestrator will run afterwards, so it does not spend calls on workarounds.
 
 ### Report-back contract
 
@@ -89,14 +98,19 @@ delegate-codex cancel "$job"
 - The prompt is the full handoff contract, written once the plan is settled. For a long job also name the branch or worktree to work in, tell the delegate to commit nothing unless asked, and tell it to stop and report rather than widen scope when the spec turns out wrong.
 - Give each concurrent write job its own git worktree. Two delegates, or a delegate and the orchestrator, editing one working tree corrupt each other's work.
 - Join with bounded waits from the open turn. Between joins, do only work that does not touch the delegate's files. Exit codes: 0 succeeded, 75 still live, 87 timed out, 125 runner failure or lost worker, 130 cancelled, anything else is Codex's own exit code.
-- `succeeded` means only that Codex exited cleanly. Read `result`, then review the diff and run the verify command yourself before reporting done; a delegate that was blocked still exits 0.
+- `succeeded` means only that Codex exited cleanly; a delegate that was blocked still exits 0. Read `result` and review the diff, then run the gates the delegate could not run and any check its report makes suspect.
 - The delegate inherits the caller's `PATH` and nothing else from its environment. Forward a variable it needs by name with `--pass-env NAME`; never paste secrets into the prompt.
 - If `inspect` shows no recent event and a stale last message, cancel and retry with feedback rather than waiting out the runtime cap.
 
-## Long-running commands
+## Commands
 
 - Bound any command that can hang on external state (network, a container daemon, a remote host): `timeout <seconds> <cmd>` on Linux, `gtimeout` from coreutils on macOS. A retry loop around an unbounded probe is still unbounded; bound each probe, not just the loop.
 - Scripts launched in the background must terminate on every outcome: success, known failure signatures, and a hard iteration cap. Silence is not success.
+- A long job is done when its process exits or its status says so, not when an expected log line appears. When a wait ends, check the result and decide the next step at once, so a GPU or a queue never sits idle.
+- In Claude Code, `sleep N` followed by a check in one Bash call is blocked. Wait with Monitor, a bounded `until` loop, or the job's own join.
+- Stop a process by a PID saved at launch or by the port it holds. `pkill -f <pattern>` matches the shell running it when the pattern is in the same command line, and kills that shell.
+- `cmd | tail` reports `tail`'s exit status. Use `set -o pipefail` or read `${PIPESTATUS[0]}` when the status matters.
+- Use `python3` (or the project's `uv run python`) for ad hoc scripts; many hosts have no `python`.
 
 ## Messaging Jishnu
 
@@ -107,8 +121,9 @@ delegate-codex cancel "$job"
 - Commit messages are for someone reading the log a year from now. The subject line says what changed in plain words, in the imperative, under about 70 characters. The body says why, and anything a reader could not get from the diff. No vague subjects ("fix stuff", "updates", "wip"), and no labels coined mid-session.
 - One commit is one coherent change. Do not bundle unrelated edits, and do not commit files you did not mean to touch.
 - Use `gh` for everything on GitHub: creating, viewing, and merging PRs, reading review comments, inspecting CI runs and their logs (`gh pr view`, `gh pr checks`, `gh run view --log-failed`, `gh api`). Do not guess at state you can query.
-- Never force push on your own, including `--force-with-lease`. If a force push looks unavoidable (a rebase or amend of commits already pushed, a rewritten history), stop before doing it. Tell the user what happened, why a normal push no longer works, and what the options are, then wait for their decision.
-- Prefer fixing forward with a new commit over rewriting commits that are already pushed; that is what keeps force pushes avoidable.
+- Never force push on your own, including `--force-with-lease`. If a force push looks unavoidable (a rebase or amend of commits already pushed, a rewritten history), stop before doing it. Tell the user what happened, why a normal push no longer works, and what the options are, then wait for their decision. A request to squash, tidy, or merge commits that are already pushed is not that decision; ask, or squash at merge time (`gh pr merge --squash`).
+- Prefer fixing forward with a new commit over rewriting commits that are already pushed; that is what keeps force pushes avoidable. Shape commits before the first push.
+- A pull request carries only the change it describes. Read its full diff before pushing; experiment scripts, raw results, and scratch files stay out unless the user asked for them.
 
 ### Pull requests
 
@@ -128,3 +143,4 @@ Terse shorthand between tool calls is fine; that is thinking out loud. The final
 - Drop the working vocabulary. No arrow chains, no hyphen-stacked compounds, no labels coined mid-session. Give files, commits, flags, and run ids their own plain-language clause.
 - Readable beats concise. Shorten by cutting details that would not change what the reader does next, not by compressing prose into fragments.
 - Report faithfully: failing tests with their output, skipped steps named as skipped.
+- After an interruption (a usage limit, a crash, a resumed session), name the step that was interrupted and the evidence that it finished.
