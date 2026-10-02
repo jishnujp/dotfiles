@@ -137,7 +137,18 @@ Whether a change needs a pull request depends on the repo, not on habit. A repo'
 - Repos only the user maintains: commit to the default branch when the user is present in the session and asked for the change. Use a pull request instead when any of these hold: the repo has CI or deploys from its default branch; the work was unattended or done by a delegate; the change is large or risky; another agent session may be active in the repo; or the user asks for one.
 - Either way, push only when asked.
 
-Open and update pull requests with the `create-pr` skill when it is available; it holds the procedure and the description format. Without it: title by the commit subject rules, and a description in simple language covering what, why, how, testing and verification (only what was actually run, naming what was not), and tradeoffs. Keep the description current when later commits change the PR's scope.
+Open and update pull requests with the `create-pr` skill when available; it holds the procedure. Titles follow the commit subject rules. Use the writing standard below whether or not the skill is available, and keep the description current when the PR's scope changes.
+
+PR descriptions are concise engineering records, not changelogs. Write for someone reading six months later who has not seen the conversation:
+
+- Start with motivation: for bugs, the user-visible problem and impact; for features, the capability and why it is needed; for refactors or maintenance, the constraint, complexity, or future work motivating the change.
+- Give the relevant background: the root cause or incorrect assumption for bugs, or the existing behavior or limitation for features. State unknowns and assumptions explicitly.
+- Explain the change conceptually, including non-obvious decisions and tradeoffs. Do not narrate the diff file by file.
+- Distinguish tests you ran and behavior you directly observed from inference, reports, and testing by others. Give commands or evidence and outcomes; attribute results from CI or other people and agents.
+- Name relevant limitations, untested configurations, compatibility concerns, and remaining risks.
+- Use specific facts and observed behavior, not vague claims such as "works", "better", "robust", or "improved". Include the conditions behind measurements. Cut claims a reviewer cannot verify.
+
+Use plain words and enough context to explain why the change exists, how it works at a high level, why the approach is reasonable, and what evidence supports it without reverse-engineering the diff. Scale the explanation to the change's size and risk; a small change may need only a paragraph and verification. Use sections only when helpful, omit those that do not apply, and never fill them with "N/A".
 
 ## Final summary
 

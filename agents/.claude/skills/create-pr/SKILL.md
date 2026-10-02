@@ -56,15 +56,15 @@ For a large diff, delegate the read and ask for a summary per area with file ref
 
 The title follows the commit subject rules: what changed, plain words, imperative, under about 70 characters.
 
-The body is in simple language for a reader who has not seen the work, with these sections in this order:
+The body follows the PR description standard in the global instructions: a concise engineering record for someone reading it six months from now, not a changelog. In practice:
 
-- **What**: the change, in a sentence or two.
-- **Why**: the problem or need behind it. Link the issue if there is one.
-- **How**: the approach, and anything in the diff that would surprise a reviewer.
-- **Testing and verification**: everything actually run or checked in step 4, with the outcome. Name what was not tested.
-- **Tradeoffs**: alternatives considered, what was given up, known limitations, and follow-ups left out of scope.
+- Open with the motivation (the user-visible problem, the capability needed, or the constraint behind a refactor), then the background: root cause, or the existing behavior that falls short. Link the issue if there is one. Say what is assumed or unknown.
+- Explain the change conceptually, with the non-obvious decisions and their tradeoffs. Do not walk the diff file by file.
+- Report verification from step 4 as commands and outcomes. Keep what you ran and observed apart from what you inferred, and attribute results from CI, other people, or other agents. Name what was not tested.
+- Name limitations, untested configurations, compatibility concerns, and remaining risks.
+- Give measurements with the conditions that produced them. Replace "works", "better", "robust" and "improved" with the observed fact, and cut any claim a reviewer cannot check.
 
-Leave out working vocabulary, a file-by-file changelog the diff already shows, and claims about testing you cannot point to output for. End the body with the attribution line if the session specifies one.
+Size it to the change's size and risk; a small fix may need one paragraph plus verification. Use headings only when they help, and never write a section that says "N/A". Leave out working vocabulary. Before saving, check every claim against the final diff and the evidence you have. End the body with the attribution line if the session specifies one.
 
 ## 7. Create or update
 
