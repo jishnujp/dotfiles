@@ -112,6 +112,10 @@ delegate-codex cancel "$job"
 - `cmd | tail` reports `tail`'s exit status. Use `set -o pipefail` or read `${PIPESTATUS[0]}` when the status matters.
 - Use `python3` (or the project's `uv run python`) for ad hoc scripts; many hosts have no `python`.
 
+## Feedback log
+
+- In Claude Code, when the user gives feedback on work you already did, log it with the `feedback-log` skill in the same turn, without asking: a redo, a different approach to what you delivered, a corrected assumption, a missed instruction, a failing tool call they spotted, dissatisfaction, or specific praise. New requirements and ordinary follow-ups are not feedback.
+
 ## Messaging Jishnu
 
 - To message or alert Jishnu, or post in a Buzz channel, use `buzz-post` (skill `buzz-post`; devbox only). It goes to Jishnu by default; post in a public channel only when the task names it.
